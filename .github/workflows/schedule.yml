@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       WAKATIME_API_KEY: ${{ secrets.WAKATIME_API_KEY }}
-      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      GH_TOKEN: ${{ secrets.GIST_TOKEN }}
       GIST_ID: ${{ secrets.GIST_ID }}
       GIST_BARSTYLE: SOLIDLT
       GIST_BARLENGTH: -1
