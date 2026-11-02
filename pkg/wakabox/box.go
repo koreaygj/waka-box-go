@@ -68,14 +68,13 @@ func NewBox(wakaAPIKey, ghUsername, ghToken string, style BoxStyle) *Box {
 	return box
 }
 
-// WakaTime API 응답 구조체 정의
 type wakaStatsResponse struct {
 	Data struct {
 		Languages []wakatime.StatItem `json:"languages"`
 	} `json:"data"`
 }
 
-// Bearer 토큰 인증 방식으로 WakaTime stats 직접 호출
+// Bearer 헤더를 사용하여 WakaTime API 직접 호출
 func (b *Box) GetStats(ctx context.Context) ([]string, error) {
 	url := "https://wakatime.com/api/v1/users/current/stats/last_7_days"
 
@@ -84,7 +83,7 @@ func (b *Box) GetStats(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("wakabox.GetStats: error creating request: %w", err)
 	}
 
-	// Authorization 헤더에 Bearer 토큰 설정
+	// Basic 대신 Bearer 인증 헤더로 설정
 	req.Header.Set("Authorization", "Bearer "+b.wakaAPIKey)
 
 	client := &http.Client{}
