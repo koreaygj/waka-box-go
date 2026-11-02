@@ -3,9 +3,11 @@ package wakabox
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"math"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -16,7 +18,6 @@ import (
 )
 
 // maxLineLength is the visible number of characters in a pinned gist box
-// (accounting for the clock emoji)
 const maxLineLength = 53
 
 // BarStyle defines valid styles for the progress bar
@@ -28,29 +29,25 @@ var BarStyle = map[string][]rune{
 	"UNDERSCORE": []rune(`▁▏▎▍▌▋▊▉█`),
 }
 
-// BoxStyle contains information for initalizing a gist box style
 type BoxStyle struct {
-	BarStyle     string // Style of the progress bar as defined by BarStyle
-	BarLength    string // Length of the bar as a string (gets converted to an Int)
-	TimeStyle    string // Style of the time text. "SHORT" will be abbreviated.
-	barLengthInt int    // Set automatically from the Length defined above
-	maxLangLen   int    // Set automatically from the list of languages from wakatime
-	maxTimeLen   int    // Set automatically from the list of times from wakatime
-
+	BarStyle     string
+	BarLength    string
+	TimeStyle    string
+	barLengthInt int
+	maxLangLen   int
+	maxTimeLen   int
 }
 
-// Box contains a github and wakatime client and styling information for the gist box
 type Box struct {
-	github   *github.Client
-	wakatime *wakatime.Client
-	style    BoxStyle
+	github     *github.Client
+	wakaAPIKey string
+	style      BoxStyle
 }
 
-// NewBox creates a box struct with appropriate wakatime and github information and gist styling information
 func NewBox(wakaAPIKey, ghUsername, ghToken string, style BoxStyle) *Box {
-	box := &Box{}
-
-	box.wakatime = wakatime.NewClient(wakaAPIKey, nil)
+	box := &Box{
+		wakaAPIKey: wakaAPIKey,
+	}
 
 	tp := github.BasicAuthTransport{
 		Username: strings.TrimSpace(ghUsername),
@@ -60,36 +57,63 @@ func NewBox(wakaAPIKey, ghUsername, ghToken string, style BoxStyle) *Box {
 
 	length, err := strconv.Atoi(style.BarLength)
 	if err != nil {
-		length = 21 //Default to 21
+		length = 21
 	}
 	style.barLengthInt = length
 	if style.BarStyle == "" {
-		style.BarStyle = "SOLIDLT" // Default to SOLIDLT
+		style.BarStyle = "SOLIDLT"
 	}
 	box.style = style
 
 	return box
 }
 
-// GetStats gets the language stats form wakatime.com.
+// WakaTime API 응답 구조체 정의
+type wakaStatsResponse struct {
+	Data struct {
+		Languages []wakatime.StatItem `json:"languages"`
+	} `json:"data"`
+}
+
+// Bearer 토큰 인증 방식으로 WakaTime stats 직접 호출
 func (b *Box) GetStats(ctx context.Context) ([]string, error) {
-	stats, err := b.wakatime.Stats.Current(ctx, wakatime.RangeLast7Days, &wakatime.StatsQuery{})
+	url := "https://wakatime.com/api/v1/users/current/stats/last_7_days"
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("wakabox.GetStats: Error getting Current Stats: %w", err)
+		return nil, fmt.Errorf("wakabox.GetStats: error creating request: %w", err)
 	}
 
-	if languages := stats.Data.Languages; len(languages) > 0 {
+	// Authorization 헤더에 Bearer 토큰 설정
+	req.Header.Set("Authorization", "Bearer "+b.wakaAPIKey)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("wakabox.GetStats: error executing request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := ioutil.ReadAll(resp.Body)
+		return nil, fmt.Errorf("wakabox.GetStats: API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var statsRes wakaStatsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&statsRes); err != nil {
+		return nil, fmt.Errorf("wakabox.GetStats: error decoding json: %w", err)
+	}
+
+	if languages := statsRes.Data.Languages; len(languages) > 0 {
 		lines, err := b.GenerateGistLines(ctx, languages)
 		if err != nil {
 			return nil, fmt.Errorf("wakabox.GetStats: Error generating gist lines: %w", err)
 		}
-
 		return lines, nil
 	}
 	return []string{"Still Gathering Statistics..."}, nil
 }
 
-// GetGist gets the gist from github.com.
 func (b *Box) GetGist(ctx context.Context, id string) (*github.Gist, error) {
 	gist, _, err := b.github.Gists.Get(ctx, id)
 	if err != nil {
@@ -98,7 +122,6 @@ func (b *Box) GetGist(ctx context.Context, id string) (*github.Gist, error) {
 	return gist, nil
 }
 
-// UpdateGist updates the gist.
 func (b *Box) UpdateGist(ctx context.Context, id string, gist *github.Gist) error {
 	_, _, err := b.github.Gists.Edit(ctx, id, gist)
 	if err != nil {
@@ -136,7 +159,6 @@ func (b *Box) UpdateMarkdown(ctx context.Context, title, filename string, conten
 	return nil
 }
 
-// GenerateGistLines takes an slice of wakatime.StatItems, and generates a line for the gist.
 func (b *Box) GenerateGistLines(ctx context.Context, languages []wakatime.StatItem) ([]string, error) {
 	max := 0
 	lines := make([]string, 0)
@@ -164,7 +186,6 @@ func (b *Box) GenerateGistLines(ctx context.Context, languages []wakatime.StatIt
 	return lines, nil
 }
 
-// ConstructLine formats a gist line from stat infomation
 func (b *Box) ConstructLine(ctx context.Context, stat wakatime.StatItem) string {
 	return fmt.Sprintf("%-*s🕓 %-*s%s%5.1f%%",
 		b.style.maxLangLen+1, *stat.Name,
@@ -173,15 +194,7 @@ func (b *Box) ConstructLine(ctx context.Context, stat wakatime.StatItem) string 
 		*stat.Percent)
 }
 
-// GenerateBarChart generates a bar chart with the given percent and size.
-// Percent is a float64 from 0-100 representing the progress bar percentage
-// Size is an int representing the length of the progress bar in characters
-// BarType is a BarType representing the type of barchart: It can be one of the following:
-//    SOLIDLT SOLIDMD SOLIDDK: Block characters with a dotted background
-//    UNDERSCORE: Block characters with an line accross the boottom
-//    EMPTY: Block characters with an empty background
 func GenerateBarChart(ctx context.Context, percent float64, size int, barType string) string {
-	// using rune as for utf-8 encoding
 	syms := BarStyle[barType]
 	if len(syms) > 9 {
 		panic("No Syms")
@@ -195,7 +208,6 @@ func GenerateBarChart(ctx context.Context, percent float64, size int, barType st
 	}
 
 	var semi = frac % 8
-
 	bar := strings.Repeat(string(syms[8:9]), barsFull) + string(syms[semi:semi+1])
 
 	return pad(bar, string(syms[0:1]), size)
@@ -206,7 +218,6 @@ func pad(s, pad string, targetLength int) string {
 	if padding <= 0 {
 		return s
 	}
-
 	return s + strings.Repeat(pad, padding)
 }
 
