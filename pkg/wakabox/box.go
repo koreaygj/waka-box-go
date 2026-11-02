@@ -74,7 +74,9 @@ type wakaStatsResponse struct {
 	} `json:"data"`
 }
 
-// Bearer 헤더를 사용하여 WakaTime API 직접 호출
+// GetStats calls the WakaTime API directly. Since 2026-11-01 WakaTime API keys
+// are write-only (plugins), so reading stats requires an OAuth access token
+// (https://wakatime.com/oauth) with the read_stats scope, sent as a Bearer token.
 func (b *Box) GetStats(ctx context.Context) ([]string, error) {
 	url := "https://wakatime.com/api/v1/users/current/stats/last_7_days"
 
@@ -83,8 +85,7 @@ func (b *Box) GetStats(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("wakabox.GetStats: error creating request: %w", err)
 	}
 
-	// Basic 대신 Bearer 인증 헤더로 설정
-	req.Header.Set("Authorization", "Bearer "+b.wakaAPIKey)
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(b.wakaAPIKey))
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
